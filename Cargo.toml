@@ -1,0 +1,56 @@
+[package]
+name = "audio_sender"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Audio capture/playback
+windows = { version = "0.52", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Console",
+] }
+cpal = "0.15"
+
+# Audio codec
+opus = "0.3"
+
+# Networking
+tokio = { version = "1", features = ["full"] }
+socket2 = "0.5"
+
+# GUI
+eframe = "0.31"
+egui = "0.31"
+tray-item = "0.10"
+image = "0.25"
+
+# Configuration & persistence
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+directories = "5"
+
+# Windows integration
+windows-service = "0.6"
+winreg = "0.52"
+
+# Utilities
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+hostname = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[build-dependencies]
+embed-resource = "3"

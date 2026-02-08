@@ -5,6 +5,7 @@ mod server;
 mod client;
 mod gui;
 mod utils;
+mod platform;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -20,6 +21,10 @@ struct Cli {
     /// Launch GUI mode (default if no command specified)
     #[arg(long)]
     gui: bool,
+    
+    /// Start minimized to system tray
+    #[arg(long)]
+    minimized: bool,
 }
 
 #[derive(Subcommand)]
@@ -55,10 +60,18 @@ fn main() -> Result<()> {
     // Parse command line arguments
     let cli = Cli::parse();
     
+    // Determine if we should start minimized
+    let start_minimized = cli.minimized || (config.start_minimized && cli.gui);
+    
     // If no command specified or --gui flag, launch GUI
     if cli.gui || cli.command.is_none() {
         info!("Launching GUI mode");
-        if let Err(e) = gui::app::run_gui() {
+        
+        // Setup console based on config - if disabled, completely remove it
+        // Note: This requires restart to take effect when changed
+        platform::console::setup_console_at_startup(config.show_console);
+        
+        if let Err(e) = gui::app::run_gui(config, start_minimized) {
             eprintln!("GUI error: {}", e);
         }
         return Ok(());
@@ -70,6 +83,12 @@ fn main() -> Result<()> {
             if let Some(ref d) = device {
                 info!("Selected audio device: '{}'", d);
             }
+            
+            // Kill any existing instances first
+            if let Err(e) = utils::kill_existing_instances() {
+                log::warn!("Failed to kill existing instances: {}", e);
+            }
+            
             server::run_server(config, device)?;
         }
         Commands::Client { connect } => {
@@ -91,7 +110,7 @@ fn main() -> Result<()> {
         }
         Commands::Gui => {
             info!("Launching GUI mode");
-            if let Err(e) = gui::app::run_gui() {
+            if let Err(e) = gui::app::run_gui(config, start_minimized) {
                 eprintln!("GUI error: {}", e);
             }
         }

@@ -1,0 +1,15 @@
+[2026-02-08T17:52:07Z INFO  audio_sender] AudioSender v0.1.0
+[2026-02-08T17:52:07Z INFO  audio_sender] Launching GUI mode
+[2026-02-08T17:52:08Z INFO  audio_sender::gui::app] System tray initialized
+[2026-02-08T17:52:08Z INFO  audio_sender::gui::app] Auto-starting server on launch...
+[2026-02-08T17:52:08Z INFO  audio_sender::gui::app] Settings saved
+[2026-02-08T17:52:08Z INFO  audio_sender::utils] Checking for existing AudioSender instances (current PID: 30512)...
+[2026-02-08T17:52:08Z INFO  audio_sender::utils] No other instances found
+[2026-02-08T17:52:08Z INFO  audio_sender::audio::capture] Searching for audio device containing: 'NGENUITY - 8 Channel Spatial (HyperX Virtual Audio Device)'
+[2026-02-08T17:52:08Z INFO  audio_sender::network::discovery] Starting discovery broadcast for server: DESKTOP-PS56J7J
+[2026-02-08T17:52:08Z INFO  audio_sender::network::discovery] Broadcasting on port 59100 (make sure firewall allows UDP)
+[2026-02-08T17:52:08Z INFO  audio_sender::audio::capture] Using audio device: NGENUITY - 8 Channel Spatial (HyperX Virtual Audio Device)
+[2026-02-08T17:52:08Z INFO  audio_sender::audio::capture] Device native format: 48000 Hz, 8 channels
+[2026-02-08T17:52:08Z WARN  audio_sender::audio::capture] ⚠️ Converting from 8 to 2 channels
+[2026-02-08T17:52:08Z INFO  audio_sender::audio::capture] Stream configured at: 48000 Hz, 2 channels (Opus compatible)
+[2026-02-08T17:52:08Z ERROR audio_sender::gui::app] Server error: The requested stream configuration is not supported by the device.
