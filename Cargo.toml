@@ -2,6 +2,8 @@
 name = "audio_sender"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Ultra-low latency audio streaming between Windows computers"
 
 [dependencies]
 # Audio capture/playback
