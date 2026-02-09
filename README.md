@@ -48,20 +48,34 @@ AudioSender is a lightweight, high-performance audio relay application designed 
 
 ---
 
-## 💻 Quick Start
+## 💻 Usage
 
-### 1. Launch the Application
-Download the latest release and run `audio_sender.exe`.
+### 🎨 GUI Mode
+Simply run `audio_sender.exe`. This is the default mode and provides a full dashboard for configuration and monitoring.
 
-### 2. Server Mode (Source PC)
-1. Select **📡 Server** mode.
-2. Choose your **Audio Device** (usually "Default" for system audio).
-3. Click **▶ START**.
+### ⌨️ CLI Mode
+AudioSender also supports a full command-line interface for headless environments or scripting:
 
-### 3. Client Mode (Receiver PC)
-1. Select **🎧 Client** mode.
-2. The server should be auto-discovered. If not, enter the server's IP manually.
-3. Click **▶ START** to begin hearing the stream.
+**Server (Source):**
+```bash
+# Start with default settings
+audio_sender.exe server
+
+# List available audio devices
+audio_sender.exe list-devices
+
+# Start with a specific audio device
+audio_sender.exe server --device "Stereo Mix (Realtek)"
+```
+
+**Client (Receiver):**
+```bash
+# Auto-discover server
+audio_sender.exe client
+
+# Connect directly to an IP
+audio_sender.exe client --connect 192.168.1.50
+```
 
 ---
 
