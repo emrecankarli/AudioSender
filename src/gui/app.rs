@@ -19,11 +19,32 @@ use crate::utils::{ensure_port_free, kill_existing_instances};
 use super::state::SharedState;
 use super::tray::{SystemTray, TrayEvent};
 
+/// How often we ask for a repaint while audio is streaming (level meter + stats).
+const STREAMING_REPAINT_INTERVAL_MS: u64 = 50;
+/// How often we ask for a repaint when the UI is idle (nothing on screen changes).
+const IDLE_REPAINT_INTERVAL_MS: u64 = 500;
 /// Application mode
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum AppMode {
     Server,
     Client,
+}
+
+/// Window visibility state machine.
+///
+/// eframe only paints when something asks it to, so we decide the cadence here.
+/// A window that is hidden to the tray or minimized cannot be painted at all
+/// (Windows never delivers `WM_PAINT` to it), so asking for repaints in that
+/// state is pure waste - and on older eframe versions it was much worse: the
+/// event loop got parked in `ControlFlow::Poll` and busy-spun a whole CPU core
+/// (egui issue #8326). eframe 0.34 handles that, but parking the loop ourselves
+/// still takes the cost to zero.
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum WindowState {
+    /// On screen and paintable: draw the UI and schedule repaints.
+    Visible,
+    /// Hidden to tray / minimized / not paintable: schedule nothing at all.
+    Parked,
 }
 
 /// Background worker command
@@ -72,8 +93,10 @@ pub struct AudioSenderApp {
     tray_tx: Option<Sender<TrayEvent>>,
     
     // Window state
+    /// Intent: should the window be on screen?
     show_window: bool,
-    window_visible: bool,
+    /// Actual visibility state machine - see [`WindowState`].
+    window_state: WindowState,
     start_minimized: bool,
     
     // Settings window
@@ -112,8 +135,12 @@ impl AudioSenderApp {
             worker_handle: None,
             tray: None,
             tray_tx: None,
-            show_window: true,
-            window_visible: !start_minimized,
+            show_window: !start_minimized,
+            window_state: if start_minimized {
+                WindowState::Parked
+            } else {
+                WindowState::Visible
+            },
             start_minimized,
             show_settings: false,
             config: config.clone(),
@@ -241,7 +268,6 @@ impl AudioSenderApp {
                 TrayEvent::Show => {
                     log::info!("Tray: Show window requested - syncing state");
                     self.show_window = true;
-                    self.window_visible = true;
                     // Window already restored by callback, but sync state
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -333,14 +359,13 @@ impl AudioSenderApp {
 }
 
 impl eframe::App for AudioSenderApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Always request repaint to keep the app responsive
-        ctx.request_repaint_after(Duration::from_millis(50));
-        
-        // Always check for worker responses - even when hidden
+    /// Runs on every pass, and also when the UI is hidden but a repaint was
+    /// requested. This is where all state updates and repaint scheduling happen -
+    /// nothing is painted here.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Worker responses and tray events must be polled even while the window is
+        // hidden to tray - they are the only way the app learns it should come back.
         self.check_worker_responses();
-        
-        // Always check for tray events - this is critical for tray to work
         self.check_tray_events(ctx);
         
         // Handle auto-start on first frame
@@ -369,12 +394,74 @@ impl eframe::App for AudioSenderApp {
         // Handle minimize to tray on startup
         if self.start_minimized {
             self.start_minimized = false;
-            self.window_visible = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hide_to_tray(ctx);
         }
         
+        // A window is paintable when we want it shown and the user has not minimized
+        // it. Deliberately based on our own state plus egui's viewport info - not on
+        // a Win32 `IsWindowVisible` probe, which is unreliable during the first pass
+        // (the window is not shown yet) and would park the UI before it ever draws.
+        let paintable = self.show_window && !is_minimized(ctx);
+        
+        if paintable && self.window_state != WindowState::Visible {
+            log::info!("Window is paintable - resuming UI");
+            self.window_state = WindowState::Visible;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.request_repaint();
+        } else if !paintable && self.window_state == WindowState::Visible {
+            log::info!("Window no longer paintable - parking repaints");
+            self.window_state = WindowState::Parked;
+        }
+        
+        if self.window_state == WindowState::Visible {
+            // Repaint only as often as the UI actually changes: the level meter
+            // and the stats need ~20 fps while streaming, an idle window nothing.
+            let interval_ms = if self.shared_state.is_connected() {
+                STREAMING_REPAINT_INTERVAL_MS
+            } else {
+                IDLE_REPAINT_INTERVAL_MS
+            };
+            ctx.request_repaint_after(Duration::from_millis(interval_ms));
+        }
+        // Parked: schedule nothing at all, so the event loop stays blocked in
+        // `ControlFlow::Wait` (0% CPU) until the tray or the taskbar wakes us up.
+    }
+    
+    /// Draws the UI. eframe only calls this when it actually wants a frame, so we
+    /// always paint here - the [`WindowState`] machine only governs how often we
+    /// *ask* for frames, never whether a requested frame is drawn.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw_ui(ui);
+    }
+    
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Save window position and size
+        if self.save_window_state {
+            // Note: We'd need to get the actual position from egui, but for now we save other settings
+            self.save_settings();
+        }
+        
+        // Stop worker thread
+        if self.worker_handle.is_some() {
+            self.send_command(WorkerCommand::Stop);
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl AudioSenderApp {
+    /// Hide to the system tray, deliberately leaving no pending repaint behind.
+    fn hide_to_tray(&mut self, ctx: &egui::Context) {
+        log::info!("Hiding window to tray");
+        self.window_state = WindowState::Parked;
+        self.show_window = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+    
+    fn draw_ui(&mut self, ui: &mut egui::Ui) {
         // Main UI
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
                 
@@ -388,9 +475,9 @@ impl eframe::App for AudioSenderApp {
                 ui.add_space(10.0);
                 
                 // Mode Selection Section
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(ui.style().visuals.extreme_bg_color)
-                    .rounding(8.0)
+                    .corner_radius(8)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.add_enabled_ui(!self.shared_state.is_connected(), |ui| {
@@ -410,9 +497,9 @@ impl eframe::App for AudioSenderApp {
                 ui.add_space(10.0);
                 
                 // Configuration Section
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(ui.style().visuals.extreme_bg_color)
-                    .rounding(8.0)
+                    .corner_radius(8)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         // Server mode: Device selection
@@ -471,9 +558,9 @@ impl eframe::App for AudioSenderApp {
                 ui.add_space(10.0);
                 
                 // Status Section
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(ui.style().visuals.extreme_bg_color)
-                    .rounding(8.0)
+                    .corner_radius(8)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         // Audio level meter
@@ -570,8 +657,7 @@ impl eframe::App for AudioSenderApp {
                         egui::Button::new(egui::RichText::new("🗕 Hide").size(14.0))
                     ).clicked() {
                         log::info!("Hide button clicked - minimizing to tray");
-                        self.window_visible = false;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                        self.hide_to_tray(ui.ctx());
                     }
                 });
                 
@@ -589,11 +675,12 @@ impl eframe::App for AudioSenderApp {
         
         // Settings window
         if self.show_settings {
+            let ctx = ui.ctx().clone();
             egui::Window::new("⚙ Settings")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     ui.label("Server Name:");
                     ui.text_edit_singleline(&mut self.config.server_name);
                     ui.add_space(10.0);
@@ -649,20 +736,6 @@ impl eframe::App for AudioSenderApp {
                         }
                     });
                 });
-        }
-    }
-    
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Save window position and size
-        if self.save_window_state {
-            // Note: We'd need to get the actual position from egui, but for now we save other settings
-            self.save_settings();
-        }
-        
-        // Stop worker thread
-        if self.worker_handle.is_some() {
-            self.send_command(WorkerCommand::Stop);
-            thread::sleep(Duration::from_millis(100));
         }
     }
 }
@@ -1017,6 +1090,14 @@ fn run_client_worker(
     
     state.set_connected(false);
     Ok(())
+}
+
+/// Has the user minimized the window?
+///
+/// A minimized window still reports itself as visible, but Windows will not send
+/// it `WM_PAINT`, so it has to be treated the same as a hidden one.
+fn is_minimized(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.viewport().minimized).unwrap_or(false)
 }
 
 /// Run the GUI application

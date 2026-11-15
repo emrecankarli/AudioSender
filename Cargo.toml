@@ -26,8 +26,17 @@ tokio = { version = "1", features = ["full"] }
 socket2 = "0.5"
 
 # GUI
-eframe = "0.31"
-egui = "0.31"
+# NOTE: keep `default-features = false` - eframe's default feature set pulls in
+# wgpu, which drags a second `windows` crate version into the build and breaks it.
+eframe = { version = "0.34", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "accesskit",
+    "wayland",
+    "x11",
+    "web_screen_reader",
+] }
+egui = "0.34"
 tray-item = "0.10"
 image = "0.25"
 
