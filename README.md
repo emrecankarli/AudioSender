@@ -32,6 +32,7 @@ AudioSender is a lightweight, high-performance audio relay application designed 
 ## 🚀 Key Features
 
 *   **⚡ Ultra-Low Latency:** Optimized for real-time audio with minimal delay (default 5ms buffer).
+*   **🪶 Negligible Footprint:** Sits in the tray all day on a sliver of CPU — light enough to forget it's running.
 *   **📡 Auto-Discovery:** Clients automatically find servers on the local network using UDP broadcast.
 *   **🔊 WASAPI Integration:** Uses Windows Audio Session API for high-quality loopback capture.
 *   **🎧 Opus Codec:** Studio-quality audio compression (128 kbps) with low overhead.
