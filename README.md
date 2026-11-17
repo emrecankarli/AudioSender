@@ -44,7 +44,9 @@ AudioSender is a lightweight, high-performance audio relay application designed 
 
 *   **OS:** Windows 10 or newer.
 *   **Network:** Both computers must be on the same local network for auto-discovery.
-*   **Firewall:** Allow UDP ports **59100** (discovery) and **59200** (streaming).
+*   **Firewall:** On the **server**, allow inbound UDP **59100** (discovery) and **59200**
+    (streaming). Clients send from an ephemeral source port and are expected to reach
+    the server's 59200.
 
 ---
 
@@ -96,6 +98,10 @@ Settings are stored in `%APPDATA%\AudioSender\config.toml`. You can also adjust 
 2.  **Encode:** Audio data is compressed using the **Opus** codec (LOW_DELAY mode).
 3.  **Transport:** Encoded packets are sent via **UDP** to eliminate TCP retransmission delays.
 4.  **Playback:** The client receives, decodes, and plays the audio with minimal jitter buffering.
+5.  **Keep-alive:** The client re-sends its one-byte handshake once a second. The server
+    keeps one endpoint per host and drops any endpoint that has been silent for 5
+    seconds, so a client that restarts or reconnects is replaced rather than added, and
+    the server never keeps streaming to ports nobody listens on anymore.
 
 ---
 

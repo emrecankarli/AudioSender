@@ -1,7 +1,5 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::collections::HashSet;
-use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::channel;
 use std::thread;
@@ -9,9 +7,16 @@ use std::time::{Duration, Instant};
 
 use crate::audio::{capture::AudioCapture, codec::OpusEncoder};
 use crate::config::Config;
+use crate::network::clients::{ClientRegistry, Touch, MAX_CLIENTS};
 use crate::network::discovery::DiscoveryService;
 use crate::network::protocol::{AudioPacket, STREAM_PORT};
 use crate::network::socket::create_listener_socket;
+
+/// A client that stops sending keep-alives for this long is dropped.
+///
+/// Clients re-send their handshake every second, so this tolerates four lost
+/// keep-alives before the endpoint is considered gone.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Run the server (audio source)
 pub fn run_server(config: Config, device_name: Option<String>) -> Result<()> {
@@ -64,8 +69,10 @@ pub fn run_server(config: Config, device_name: Option<String>) -> Result<()> {
     
     socket.set_nonblocking(true)?;
     
-    // Track connected clients
-    let clients: Arc<Mutex<HashSet<SocketAddr>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Track connected clients. Keyed by host, with a liveness timer: see
+    // `network::clients` for why an unbounded set here is a bandwidth bug.
+    let clients: Arc<Mutex<ClientRegistry>> =
+        Arc::new(Mutex::new(ClientRegistry::new(CLIENT_TIMEOUT)));
     let clients_clone = clients.clone();
     let socket_clone = socket.clone();
     
@@ -75,11 +82,27 @@ pub fn run_server(config: Config, device_name: Option<String>) -> Result<()> {
         loop {
             match socket_clone.recv_from(&mut buf) {
                 Ok((len, addr)) => {
-                    // Check if this is a connection request (single byte)
+                    // Clients send this byte on connect and then once a second as a
+                    // keep-alive, so it doubles as the liveness signal.
                     if len == 1 && buf[0] == 0x01 {
                         let mut clients = clients_clone.lock().unwrap();
-                        if clients.insert(addr) {
-                            info!("New client connected: {}", addr);
+                        match clients.touch(addr, Instant::now()) {
+                            Touch::New => info!(
+                                "New client connected: {} ({} active)",
+                                addr,
+                                clients.len()
+                            ),
+                            Touch::Moved { from } => info!(
+                                "Client {} reconnected on {} ({} active)",
+                                from.ip(),
+                                addr,
+                                clients.len()
+                            ),
+                            Touch::Refreshed => log::debug!("Keep-alive from {}", addr),
+                            Touch::Rejected => warn!(
+                                "Rejected client {}: already at the {} client limit",
+                                addr, MAX_CLIENTS
+                            ),
                         }
                     }
                 }
@@ -87,7 +110,10 @@ pub fn run_server(config: Config, device_name: Option<String>) -> Result<()> {
                     thread::sleep(Duration::from_millis(10));
                 }
                 Err(e) => {
+                    // A dead peer's ICMP port-unreachable can surface here; it says
+                    // nothing about the health of this socket, so keep serving.
                     warn!("Error receiving connection: {}", e);
+                    thread::sleep(Duration::from_millis(100));
                 }
             }
         }
@@ -107,7 +133,20 @@ pub fn run_server(config: Config, device_name: Option<String>) -> Result<()> {
         let packet = AudioPacket::new(sequence, timestamp, payload);
         let bytes = packet.to_bytes();
         
-        let clients_list = clients.lock().unwrap().clone();
+        // Drop endpoints that stopped sending keep-alives, then snapshot the list
+        // so the lock is not held while sending.
+        let clients_list = {
+            let mut clients = clients.lock().unwrap();
+            let removed = clients.prune(Instant::now());
+            if removed > 0 {
+                info!(
+                    "Removed {} stale client(s), {} still active",
+                    removed,
+                    clients.len()
+                );
+            }
+            clients.active()
+        };
         
         // Log stats every 5 seconds
         if last_log.elapsed().as_secs() >= 5 {
