@@ -1,3 +1,4 @@
+pub mod clients;
 pub mod discovery;
 pub mod streaming;
 pub mod protocol;
