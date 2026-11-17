@@ -23,10 +23,16 @@ pub fn create_reuse_socket(bind_addr: &str) -> Result<UdpSocket> {
     
     // Convert to standard UdpSocket
     let udp_socket: UdpSocket = socket.into();
-    
+
+    // A UDP stream must survive ICMP port-unreachable from endpoints that went
+    // away; on Windows that otherwise shows up as WSAECONNRESET on the next read.
+    if let Err(e) = crate::platform::udp::disable_udp_conn_reset(&udp_socket) {
+        log::warn!("Could not disable SIO_UDP_CONNRESET: {}", e);
+    }
+
     // Set reasonable timeouts
     udp_socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    
+
     Ok(udp_socket)
 }
 
@@ -47,6 +53,15 @@ pub fn create_broadcast_socket() -> Result<UdpSocket> {
 pub fn create_listener_socket(port: u16) -> Result<UdpSocket> {
     let addr = format!("0.0.0.0:{}", port);
     create_reuse_socket(&addr)
+}
+
+/// Create the socket a client receives on.
+///
+/// One socket per process, reused for every reconnection attempt: the server
+/// identifies a client by its source endpoint, so keeping the endpoint stable is
+/// what stops it from accumulating one stale entry per reconnect.
+pub fn create_client_socket() -> Result<UdpSocket> {
+    create_reuse_socket("0.0.0.0:0")
 }
 
 /// Wait for a port to be released (with timeout)
